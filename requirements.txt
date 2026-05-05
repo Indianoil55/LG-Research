@@ -3,3 +3,5 @@ uvicorn
 undetected-chromedriver
 selenium
 requests
+cloudscraper
+pydantic
