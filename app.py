@@ -1,82 +1,93 @@
 import cloudscraper
 import re
-from fastapi import FastAPI, Request
+import asyncio
+from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 
 app = FastAPI()
 
-class Target(BaseModel):
-    url: str
+# Maltego-style Intelligence Logic
+def extract_intel(html):
+    emails = list(set(re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html)))
+    links = list(set(re.findall(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+', html)))[:15]
+    return {"emails": emails, "links": links}
 
-@app.post("/lg-fetch")
-async def scan_logic(target: Target):
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
     scraper = cloudscraper.create_scraper()
+    
     try:
-        # Cloudflare bypass karke data nikalna
-        response = scraper.get(target.url)
-        text = response.text
-        
-        # Intelligence Extraction
-        emails = list(set(re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)))
-        links = list(set(re.findall(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+', text)))[:10] # Top 10 links
-        
-        return {"emails": emails, "links": links, "domain": target.url}
+        while True:
+            # Frontend se target URL milne ka intezar
+            target_url = await websocket.receive_text()
+            await websocket.send_json({"status": "Scanning Cloudflare..."})
+            
+            # Data Fetching[cite: 1]
+            response = scraper.get(target_url)
+            intel = extract_intel(response.text)
+            
+            # Live Data wapas bhejna
+            await websocket.send_json({
+                "status": "Complete",
+                "target": target_url,
+                "nodes": intel
+            })
     except Exception as e:
-        return {"error": str(e)}
+        await websocket.send_json({"status": "Error", "msg": str(e)})
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
     return """
-    <!DOCTYPE html>
     <html>
     <head>
-        <title>LG Research - Intelligence Graph</title>
+        <title>LG Research - Live Graph</title>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.21.1/cytoscape.min.js"></script>
         <style>
-            body { background: #0a0a0a; color: #00ff41; font-family: monospace; margin: 0; }
-            #cy { width: 100%; height: 500px; display: block; border-bottom: 1px solid #333; }
-            .controls { padding: 20px; background: #111; text-align: center; }
-            input { background: #000; border: 1px solid #00ff41; color: #00ff41; padding: 10px; width: 250px; }
-            button { background: #00ff41; color: #000; border: none; padding: 10px 20px; cursor: pointer; font-weight: bold; }
+            body { background: #050505; color: #00ff41; font-family: monospace; }
+            #cy { width: 100%; height: 80vh; background: #000; }
+            .ui { padding: 10px; background: #111; text-align: center; border-top: 2px solid #00ff41; }
+            input { background: #000; border: 1px solid #00ff41; color: #00ff41; padding: 10px; width: 300px; }
+            button { background: #00ff41; border: none; padding: 10px 20px; font-weight: bold; cursor: pointer; }
         </style>
     </head>
     <body>
         <div id="cy"></div>
-        <div class="controls">
-            <input type="text" id="urlInput" placeholder="Enter Target (e.g. https://site.com)">
-            <button onclick="startResearch()">Start Research</button>
+        <div class="ui">
+            <input type="text" id="target" placeholder="Enter URL (https://site.com)">
+            <button onclick="startScan()">Start Live Research</button>
+            <p id="status">Ready</p>
         </div>
 
         <script>
+            var ws = new WebSocket("ws://" + window.location.host + "/ws");
             var cy = cytoscape({
                 container: document.getElementById('cy'),
                 style: [
-                    { selector: 'node', style: { 'label': 'data(id)', 'background-color': '#00ff41', 'color': '#fff' } },
-                    { selector: 'edge', style: { 'width': 2, 'line-color': '#333', 'target-arrow-color': '#333', 'target-arrow-shape': 'triangle' } }
+                    { selector: 'node', style: { 'label': 'data(id)', 'background-color': '#00ff41', 'color': '#fff', 'font-size': '10px' } },
+                    { selector: 'edge', style: { 'width': 1, 'line-color': '#00ff41' } }
                 ]
             });
 
-            async function startResearch() {
-                const targetUrl = document.getElementById('urlInput').value;
-                if(!targetUrl) return alert("URL daalein!");
+            ws.onmessage = function(event) {
+                var data = JSON.parse(event.data);
+                document.getElementById('status').innerText = data.status;
+                
+                if(data.nodes) {
+                    cy.add({ data: { id: data.target } });
+                    data.nodes.emails.forEach(e => {
+                        cy.add([{ data: { id: e } }, { data: { source: data.target, target: e } }]);
+                    });
+                    data.nodes.links.forEach(l => {
+                        cy.add([{ data: { id: l } }, { data: { source: data.target, target: l } }]);
+                    });
+                    cy.layout({ name: 'cose' }).run();
+                }
+            };
 
-                const response = await fetch('/lg-fetch', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({url: targetUrl})
-                });
-                const data = await response.json();
-
-                // Graph Visualization Logic
-                cy.add({ data: { id: 'Target' } });
-                data.emails.forEach(email => {
-                    cy.add([{ data: { id: email } }, { data: { source: 'Target', target: email } }]);
-                });
-                data.links.forEach(link => {
-                    cy.add([{ data: { id: link } }, { data: { source: 'Target', target: link } }]);
-                });
-                cy.layout({ name: 'cose' }).run();
+            function startScan() {
+                var url = document.getElementById('target').value;
+                ws.send(url);
             }
         </script>
     </body>
