@@ -1,8 +1,5 @@
 fastapi
 uvicorn
-undetected-chromedriver
-selenium
-requests
 cloudscraper
-pydantic
 websockets
+python-multipart
