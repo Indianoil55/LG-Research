@@ -5,3 +5,4 @@ selenium
 requests
 cloudscraper
 pydantic
+websockets
